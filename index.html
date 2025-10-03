@@ -1,0 +1,63 @@
+<script>
+(async function(){
+  const EXPECTED_SERVER_FINGERPRINT = "<pega aquí el sha256 del server_pub.pem>";
+
+  let ws, aesKey, aesgcm;
+
+  function buf2b64(buf){return btoa(String.fromCharCode(...new Uint8Array(buf)))}
+  function b642buf(b64){return Uint8Array.from(atob(b64), c=>c.charCodeAt(0)).buffer}
+
+  async function importAES(raw){
+    return await crypto.subtle.importKey("raw", raw,"AES-GCM",false,["encrypt","decrypt"]);
+  }
+
+  async function connect(){
+    const url = `ws://${document.getElementById("serverIp").value}:8765/`;
+    ws = new WebSocket(url);
+    ws.onopen=()=>{
+      ws.send(JSON.stringify({
+        type:"handshake_init",
+        client_id: crypto.randomUUID()
+      }));
+    };
+    ws.onmessage=async ev=>{
+      const p=JSON.parse(ev.data);
+      if(p.type==="handshake_session"){
+        // verificar fingerprint (simulada: se confía en valor esperado)
+        if(p.server_pub_fingerprint!==EXPECTED_SERVER_FINGERPRINT){
+          alert("Fingerprint servidor no coincide"); ws.close(); return;
+        }
+        const encSess = b642buf(p.enc_session_key);
+        // en navegador no podemos descifrar RSA (sería con WebCrypto+clave cliente),
+        // simulamos: el server nos da OTP, lo aceptamos.
+        await ws.send(JSON.stringify({
+          type:"handshake_complete",
+          otp_id:p.otp_challenge,
+          otp_response:"<solo en test el servidor acepta>",
+        }));
+      } else if(p.type==="handshake_ok"){
+        console.log("Sesión segura establecida.");
+      } else if(p.type==="message"){
+        addMessage(p.username,p.text,p.time);
+      }
+    };
+  }
+
+  async function sendMessage(){
+    const txt=document.getElementById("input").value;
+    if(!aesgcm){alert("no seguro aún");return;}
+    const iv=crypto.getRandomValues(new Uint8Array(12));
+    const enc=await crypto.subtle.encrypt({name:"AES-GCM",iv},aesKey,new TextEncoder().encode(txt));
+    const ct=new Uint8Array(enc);
+    const msg={
+      type:"message",
+      message_id:crypto.randomUUID(),
+      iv:buf2b64(iv),
+      ciphertext:buf2b64(ct.slice(0,-16)),
+      tag:buf2b64(ct.slice(-16)),
+      timestamp:new Date().toISOString()
+    };
+    ws.send(JSON.stringify(msg));
+  }
+})();
+</script>
